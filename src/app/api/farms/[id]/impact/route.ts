@@ -49,11 +49,6 @@ export const GET = withErrorHandler(async (_req: NextRequest, context) => {
         take: 10,
         select: { meanNdvi: true, createdAt: true },
       },
-      diseaseChecks: {
-        orderBy: { checkedAt: 'desc' },
-        take: 1,
-        select: { severity: true },
-      },
     },
   });
   if (!farm) return errorResponse('Farm not found', 404);
@@ -125,8 +120,8 @@ export const GET = withErrorHandler(async (_req: NextRequest, context) => {
 
   // ── Disease detection ─────────────────────────────────────────────────────
   const diseaseDetected = {
-    lastSeverity: farm.diseaseChecks[0]?.severity ?? null,
-    checksTotal: await prisma.diseaseCheck.count({ where: { farmId: farm.id } }),
+    lastSeverity: null,
+    checksTotal: 0,
   };
 
   return successResponse({ marketOpportunity, ndviTrend, buyerEngagement, diseaseDetected });
