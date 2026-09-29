@@ -1,0 +1,265 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum CropType {
+  MAIZE
+  RICE
+  CASSAVA
+  BEANS
+  TOMATO
+}
+
+enum Role {
+  FARMER
+  BUYER
+  ADMIN
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(FARMER)
+  phone        String?
+  region       String?
+  latitude     Float?
+  longitude    Float?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  farms           Farm[]
+  interests       Interest[]
+  buyerAiMessages BuyerAiMessage[]
+  priceAlerts     PriceAlert[]
+
+  @@map("users")
+}
+
+enum AlertDirection {
+  BELOW
+  ABOVE
+}
+
+/// A buyer's price watchlist entry. There is no push/SMS delivery channel
+/// wired up (see project notes) — this is honestly a watchlist the buyer
+/// checks, not a notification that gets pushed to them. Triggered status is
+/// computed live against real market data whenever it's viewed.
+model PriceAlert {
+  id          String         @id @default(cuid())
+  buyerId     String
+  buyer       User           @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  crop        CropType
+  targetPrice Float
+  direction   AlertDirection
+  active      Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([buyerId])
+  @@map("price_alerts")
+}
+
+model Farm {
+  id           String   @id @default(cuid())
+  name         String
+  latitude     Float
+  longitude    Float
+  sizeHectares Float
+  crop         CropType
+  plantingDate DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  ownerId String
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  aiMessages   AiMessage[]
+  listing      Listing?
+  ndviReadings NdviReading[]
+
+  @@index([ownerId])
+  @@map("farms")
+}
+
+enum ListingStatus {
+  ACTIVE
+  SOLD_OUT
+  CLOSED
+}
+
+/// A farm's current "produce for sale" post. One per farm — the farmer
+/// edits it in place (quantity/price/status) rather than creating a new
+/// row each time, so there's always exactly one current listing to browse.
+model Listing {
+  id         String        @id @default(cuid())
+  farmId     String        @unique
+  farm       Farm          @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  quantityKg Float
+  pricePerKg Float
+  currency   String        @default("TZS")
+  status     ListingStatus @default(ACTIVE)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  interests Interest[]
+
+  @@index([status])
+  @@map("listings")
+}
+
+enum InterestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+/// A buyer's "I'm interested" request against a listing. Contact info
+/// (phone) is only meant to be shown to either party once ACCEPTED — that
+/// reveal happens in the API layer, not by exposing raw user records.
+model Interest {
+  id        String         @id @default(cuid())
+  listingId String
+  listing   Listing        @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  buyerId   String
+  buyer     User           @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  status    InterestStatus @default(PENDING)
+  message   String?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@unique([listingId, buyerId])
+  @@map("interests")
+}
+
+/// Reference growth-stage durations per crop, in days-after-planting.
+/// Approximate agronomic values used as a stand-in for a live FAO Crop
+/// Calendar feed — good enough to place a farm on a stage timeline, not a
+/// substitute for localized agronomic guidance.
+model CropCalendarStage {
+  id           String   @id @default(cuid())
+  crop         CropType
+  stage        String
+  daysFromSow  Int
+  daysToNext   Int?
+
+  @@unique([crop, stage])
+  @@map("crop_calendar_stages")
+}
+
+enum PriceSource {
+  WFP
+  RATIN
+  SAMPLE
+}
+
+/// Real market price observations ingested from WFP's Tanzania food-price
+/// dataset (public/data/raw/wfp_food_prices_tza.csv, via HDX). `source`
+/// distinguishes ingestion pipelines so a RATIN feed could be added
+/// alongside without conflating series.
+model MarketPrice {
+  id         String      @id @default(cuid())
+  market     String
+  region     String
+  latitude   Float
+  longitude  Float
+  commodity  CropType
+  unit       String
+  price      Float
+  currency   String      @default("TZS")
+  priceType  String      @default("retail")
+  date       DateTime
+  source     PriceSource @default(WFP)
+
+  @@index([commodity, date])
+  @@map("market_prices")
+}
+
+enum StatElement {
+  PRODUCTION
+  YIELD
+  AREA_HARVESTED
+}
+
+/// National crop production context ingested from FAOSTAT
+/// (public/data/raw/FAOSTAT_data_en_9-28-2026.csv), Tanzania only.
+model NationalCropStat {
+  id      String      @id @default(cuid())
+  crop    CropType
+  year    Int
+  element StatElement
+  value   Float
+  unit    String
+
+  @@unique([crop, year, element])
+  @@map("national_crop_stats")
+}
+
+enum MessageRole {
+  FARMER
+  MKULIMA
+}
+
+model AiMessage {
+  id        String      @id @default(cuid())
+  farmId    String
+  farm      Farm        @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  role      MessageRole
+  content   String
+  context   Json?
+  createdAt DateTime    @default(now())
+
+  @@index([farmId, createdAt])
+  @@map("ai_messages")
+}
+
+enum BuyerMessageRole {
+  BUYER
+  MKULIMA
+}
+
+/// A buyer's AI conversation, scoped per crop (their questions are about
+/// "the maize market", not one farm) — same honesty rules as AiMessage: the
+/// AI only explains verified market/listing data, it doesn't invent it.
+model BuyerAiMessage {
+  id        String            @id @default(cuid())
+  buyerId   String
+  buyer     User              @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  crop      CropType
+  role      BuyerMessageRole
+  content   String
+  context   Json?
+  createdAt DateTime          @default(now())
+
+  @@index([buyerId, crop, createdAt])
+  @@map("buyer_ai_messages")
+}
+
+/// Real per-farm NDVI readings from the Copernicus Data Space Ecosystem's
+/// Sentinel Hub Statistical API — computed server-side over a small area
+/// around the farm's coordinate (not the exact plot boundary, which isn't
+/// captured yet). Stored so repeated page loads don't re-spend the free
+/// processing-unit quota, and so a genuine trend builds up over real usage
+/// rather than being invented.
+model NdviReading {
+  id                String   @id @default(cuid())
+  farmId            String
+  farm              Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  periodStart       DateTime
+  periodEnd         DateTime
+  meanNdvi          Float
+  minNdvi           Float
+  maxNdvi           Float
+  validPixelPercent Float
+  createdAt         DateTime @default(now())
+
+  @@index([farmId, createdAt])
+  @@map("ndvi_readings")
+}
